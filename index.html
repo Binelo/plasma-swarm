@@ -1,440 +1,431 @@
 <!--
-  PLASMA SWARM — visualizador de áudio com particle life
-  ------------------------------------------------------
-  Três espécies de partícula, uma por banda de frequência:
-    GRAVE  (laranja/heat)  caça MÉDIO,  foge de AGUDO
-    MÉDIO  (ciano/plasma)  caça AGUDO,  foge de GRAVE
-    AGUDO  (violeta/arc)   caça GRAVE,  foge de MÉDIO
-  Cadeia pedra-papel-tesoura -> movimento perpétuo, sem estagnar.
-  Cada espécie brilha/incha quando sua faixa toca. Beat -> onda de choque.
+  TRIVISOR — visualizador de música com 3 modos
+  ----------------------------------------------
+  [1] VECTORSCOPE  Lissajous estéreo: canal L -> X, canal R -> Y (fio de neon)
+  [2] TERRENO      heightmap de frequências em perspectiva, rolando ao horizonte
+  [3] ÍRIS         espectro radial espelhado + anel de waveform, gira com o beat
+
+  Motor de áudio único: splitter estéreo -> 2 analisadores (time domain p/ o
+  vectorscope) + 1 analisador master (espectro p/ terreno e íris) + beat detect.
 -->
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Plasma Swarm</title>
+<title>Trivisor</title>
 <style>
   :root{
-    --bg:#060812;
-    --heat:#ff4d2e;      /* GRAVE  */
-    --plasma:#22e0c8;    /* MÉDIO  */
-    --arc:#a24bff;       /* AGUDO  */
-    --hud-fg:#ffb347;
-    --hud-dim:#6b7a8f;
-    --hud-panel:rgba(8,12,22,.72);
+    --bg:#05070f;
+    --heat:#ff4d2e; --plasma:#22e0c8; --arc:#a24bff;
+    --fg:#ffb347; --dim:#66748a;
+    --panel:rgba(7,10,20,.78);
     --mono:"SFMono-Regular",ui-monospace,"JetBrains Mono","Consolas",monospace;
   }
   *{box-sizing:border-box}
   html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
-    font-family:var(--mono);color:var(--hud-fg);
-    -webkit-font-smoothing:antialiased}
-  #stage{position:fixed;inset:0;display:block}
+    font-family:var(--mono);color:var(--fg);-webkit-font-smoothing:antialiased}
+  #stage{position:fixed;inset:0}
 
-  /* ---------- HUD ---------- */
-  #hud{position:fixed;top:14px;left:14px;width:270px;z-index:10;
-    background:var(--hud-panel);border:1px solid rgba(255,179,71,.18);
-    border-radius:10px;backdrop-filter:blur(9px);
-    box-shadow:0 12px 40px rgba(0,0,0,.5);
-    transition:transform .25s ease,opacity .25s ease}
-  #hud.collapsed{transform:translateX(calc(-100% + 42px))}
-  .hud-bar{display:flex;align-items:center;gap:8px;padding:11px 12px;
-    border-bottom:1px solid rgba(255,179,71,.12);cursor:default}
-  .brand{font-weight:600;letter-spacing:2.5px;font-size:12px;flex:1;
-    text-transform:uppercase}
-  .dot{width:7px;height:7px;border-radius:50%;background:var(--heat);
-    box-shadow:0 0 8px var(--heat)}
-  #toggle{margin-left:auto;background:none;border:none;color:var(--hud-fg);
-    cursor:pointer;font-family:var(--mono);font-size:13px;padding:2px 6px;
-    border-radius:5px}
-  #toggle:hover{background:rgba(255,179,71,.12)}
+  /* -------- barra superior: modos -------- */
+  #modes{position:fixed;top:16px;left:50%;transform:translateX(-50%);
+    display:flex;gap:6px;z-index:10;background:var(--panel);
+    border:1px solid rgba(255,179,71,.16);border-radius:10px;padding:5px;
+    backdrop-filter:blur(10px);box-shadow:0 10px 34px rgba(0,0,0,.55)}
+  .mode{border:none;background:none;color:var(--dim);cursor:pointer;
+    font-family:var(--mono);font-size:10.5px;letter-spacing:1.6px;
+    text-transform:uppercase;padding:8px 14px;border-radius:7px;
+    transition:color .15s,background .15s;display:flex;align-items:center;gap:7px}
+  .mode small{opacity:.55;font-size:9px}
+  .mode:hover{color:#cdd6e4}
+  .mode.on{background:rgba(255,179,71,.13);color:var(--fg)}
+  .mode.on .k{background:var(--fg);color:#111}
+  .k{display:inline-flex;align-items:center;justify-content:center;
+    width:15px;height:15px;border-radius:4px;font-size:9px;
+    background:rgba(255,255,255,.10);color:var(--dim)}
 
-  .hud-body{padding:12px}
-  .legend{display:flex;flex-direction:column;gap:9px;margin-bottom:14px}
-  .row{display:flex;align-items:center;gap:9px;font-size:10.5px;
-    letter-spacing:.5px;text-transform:uppercase;color:var(--hud-dim)}
-  .row .sw{width:9px;height:9px;border-radius:50%;flex:none}
-  .row .nm{width:52px;color:#cdd6e4;font-weight:600}
-  .row .rel{flex:1;font-size:9.5px}
-  .meter{width:46px;height:5px;border-radius:3px;background:rgba(255,255,255,.07);
-    overflow:hidden;flex:none}
-  .meter > i{display:block;height:100%;width:0%;transition:width .05s linear}
-
-  .ctrls{display:flex;flex-direction:column;gap:11px}
-  .field{display:flex;flex-direction:column;gap:5px}
-  .field label{font-size:9.5px;letter-spacing:1px;text-transform:uppercase;
-    color:var(--hud-dim);display:flex;justify-content:space-between}
-  .field label b{color:#cdd6e4;font-weight:600}
-  input[type=range]{-webkit-appearance:none;appearance:none;height:3px;
-    border-radius:3px;background:rgba(255,179,71,.22);outline:none;cursor:pointer}
-  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;
-    height:13px;border-radius:50%;background:var(--hud-fg);cursor:pointer;
-    box-shadow:0 0 8px rgba(255,179,71,.6)}
-  input[type=range]::-moz-range-thumb{width:13px;height:13px;border:none;
-    border-radius:50%;background:var(--hud-fg);cursor:pointer}
-
-  .btns{display:flex;gap:8px;margin-top:2px}
-  .btn{flex:1;padding:9px 8px;border:1px solid rgba(255,179,71,.25);
-    background:rgba(255,179,71,.06);color:var(--hud-fg);border-radius:7px;
-    font-family:var(--mono);font-size:10.5px;letter-spacing:1px;cursor:pointer;
-    text-transform:uppercase;transition:background .15s,border-color .15s;
-    display:flex;align-items:center;justify-content:center;gap:6px}
+  /* -------- barra inferior: transporte -------- */
+  #dock{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);
+    display:flex;align-items:center;gap:10px;z-index:10;background:var(--panel);
+    border:1px solid rgba(255,179,71,.16);border-radius:10px;padding:9px 12px;
+    backdrop-filter:blur(10px);box-shadow:0 10px 34px rgba(0,0,0,.55);
+    max-width:calc(100vw - 28px)}
+  .btn{border:1px solid rgba(255,179,71,.25);background:rgba(255,179,71,.06);
+    color:var(--fg);border-radius:7px;font-family:var(--mono);font-size:10.5px;
+    letter-spacing:1px;text-transform:uppercase;cursor:pointer;padding:8px 13px;
+    transition:background .15s,border-color .15s;white-space:nowrap}
   .btn:hover{background:rgba(255,179,71,.14);border-color:rgba(255,179,71,.5)}
-  .btn.primary{background:rgba(255,77,46,.14);border-color:rgba(255,77,46,.45);
-    color:#ffd9c8}
-  .btn.primary:hover{background:rgba(255,77,46,.24)}
-  .hint{margin-top:11px;font-size:9.5px;line-height:1.5;color:var(--hud-dim);
-    letter-spacing:.3px}
-  .track{margin-top:9px;font-size:9.5px;color:var(--plasma);letter-spacing:.4px;
-    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .btn.primary{background:rgba(255,77,46,.15);border-color:rgba(255,77,46,.45);color:#ffd9c8}
+  .btn.primary:hover{background:rgba(255,77,46,.26)}
+  #trackName{font-size:9.5px;color:var(--plasma);letter-spacing:.4px;
+    max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  #meterWrap{display:flex;gap:3px;align-items:flex-end;height:18px}
+  #meterWrap i{width:4px;border-radius:2px;background:var(--fg);opacity:.85;
+    height:2px}
   input[type=file]{display:none}
 
-  @media (max-width:520px){#hud{width:calc(100vw - 28px)}}
-  @media (prefers-reduced-motion:reduce){#hud{transition:none}}
+  @media (max-width:640px){
+    .mode small{display:none}
+    #trackName{max-width:110px}
+  }
 </style>
 
 <canvas id="stage"></canvas>
 
-<div id="hud">
-  <div class="hud-bar">
-    <span class="dot" id="livedot"></span>
-    <span class="brand">Plasma Swarm</span>
-    <button id="toggle" title="Recolher">⟨⟩</button>
-  </div>
-  <div class="hud-body">
-    <div class="legend">
-      <div class="row">
-        <span class="sw" style="background:var(--heat);box-shadow:0 0 7px var(--heat)"></span>
-        <span class="nm">Grave</span>
-        <span class="rel">caça médio · foge do agudo</span>
-        <span class="meter"><i id="m0" style="background:var(--heat)"></i></span>
-      </div>
-      <div class="row">
-        <span class="sw" style="background:var(--plasma);box-shadow:0 0 7px var(--plasma)"></span>
-        <span class="nm">Médio</span>
-        <span class="rel">caça agudo · foge do grave</span>
-        <span class="meter"><i id="m1" style="background:var(--plasma)"></i></span>
-      </div>
-      <div class="row">
-        <span class="sw" style="background:var(--arc);box-shadow:0 0 7px var(--arc)"></span>
-        <span class="nm">Agudo</span>
-        <span class="rel">caça grave · foge do médio</span>
-        <span class="meter"><i id="m2" style="background:var(--arc)"></i></span>
-      </div>
-    </div>
+<div id="modes">
+  <button class="mode on" data-m="0"><span class="k">1</span>Vectorscope<small>lissajous</small></button>
+  <button class="mode" data-m="1"><span class="k">2</span>Terreno<small>heightmap</small></button>
+  <button class="mode" data-m="2"><span class="k">3</span>Íris<small>radial</small></button>
+</div>
 
-    <div class="ctrls">
-      <div class="field">
-        <label>Partículas <b id="vCount">900</b></label>
-        <input id="sCount" type="range" min="200" max="2000" step="50" value="900" />
-      </div>
-      <div class="field">
-        <label>Força <b id="vForce">1.0</b></label>
-        <input id="sForce" type="range" min="0.2" max="2.5" step="0.05" value="1.0" />
-      </div>
-      <div class="field">
-        <label>Alcance <b id="vRange">130</b></label>
-        <input id="sRange" type="range" min="60" max="220" step="5" value="130" />
-      </div>
-      <div class="field">
-        <label>Reação ao áudio <b id="vReact">1.4</b></label>
-        <input id="sReact" type="range" min="0" max="3" step="0.1" value="1.4" />
-      </div>
-
-      <div class="btns">
-        <button class="btn primary" id="bLoad">♪ Carregar música</button>
-        <button class="btn" id="bPlay">▶ Tocar</button>
-      </div>
-      <div class="btns">
-        <button class="btn" id="bReset">↻ Reiniciar enxame</button>
-      </div>
-
-      <div class="track" id="trackName">Modo ocioso — sem faixa carregada</div>
-      <div class="hint">Carregue um .mp3/.wav. O baixo agita as laranjas, os médios as cianas, os agudos as violetas. Cada drop dispara uma onda de choque.</div>
-    </div>
-  </div>
+<div id="dock">
+  <button class="btn primary" id="bLoad">♪ Música</button>
+  <button class="btn" id="bPlay">▶</button>
+  <span id="meterWrap"><i></i><i></i><i></i><i></i><i></i><i></i></span>
+  <span id="trackName">sem faixa — modo ocioso</span>
 </div>
 
 <input id="file" type="file" accept="audio/*" />
-<audio id="audio" crossorigin="anonymous"></audio>
+<audio id="audio"></audio>
 
 <script>
 (() => {
   "use strict";
 
-  // ---------------------------------------------------------------- setup
+  // ================================================================ CANVAS
   const cv = document.getElementById("stage");
   const ctx = cv.getContext("2d", { alpha: false });
   let W = 0, H = 0, DPR = 1;
-
   function resize() {
     DPR = Math.min(window.devicePixelRatio || 1, 2);
-    W = window.innerWidth; H = window.innerHeight;
+    W = innerWidth; H = innerHeight;
     cv.width = W * DPR; cv.height = H * DPR;
     cv.style.width = W + "px"; cv.style.height = H + "px";
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   }
-  window.addEventListener("resize", resize);
+  addEventListener("resize", resize);
   resize();
 
-  // ---------------------------------------------------------- config / state
-  const TYPES = [
-    { name: "grave", color: [255, 77, 46] },   // 0 bass
-    { name: "medio", color: [34, 224, 200] },  // 1 mid
-    { name: "agudo", color: [162, 75, 255] },  // 2 treble
-  ];
-
-  // Matriz de atração pedra-papel-tesoura.
-  // linha = como a espécie "sente" a coluna. + atrai (caça), - repele (foge).
-  // Grave caça Médio e foge de Agudo; e assim por diante, ciclicamente.
-  const M = [
-    [-0.08,  0.90, -0.90],
-    [-0.90, -0.08,  0.90],
-    [ 0.90, -0.90, -0.08],
-  ];
-
-  let params = { count: 900, force: 1.0, rMax: 130, react: 1.4 };
-  const friction = 0.86;    // amortecimento por frame
-  const beta = 0.28;        // raio de repulsão de curta distância (normalizado)
-
-  // arrays de partículas (Structure of Arrays p/ performance)
-  let px, py, vx, vy, pt, N = 0;
-
-  function spawn(n) {
-    N = n;
-    px = new Float32Array(n); py = new Float32Array(n);
-    vx = new Float32Array(n); vy = new Float32Array(n);
-    pt = new Uint8Array(n);
-    for (let i = 0; i < n; i++) {
-      px[i] = Math.random() * W;
-      py[i] = Math.random() * H;
-      vx[i] = (Math.random() - 0.5) * 12;
-      vy[i] = (Math.random() - 0.5) * 12;
-      pt[i] = i % 3;                 // distribuição igual entre as 3 espécies
-    }
-  }
-  spawn(params.count);
-
-  // ------------------------------------------------------- glow sprites (cache)
-  const sprites = [];
-  function buildSprites() {
-    sprites.length = 0;
-    for (const t of TYPES) {
-      const s = 64, c = document.createElement("canvas");
-      c.width = c.height = s;
-      const g = c.getContext("2d");
-      const grd = g.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
-      const [r, gg, b] = t.color;
-      grd.addColorStop(0,   `rgba(${r},${gg},${b},1)`);
-      grd.addColorStop(0.25,`rgba(${r},${gg},${b},0.55)`);
-      grd.addColorStop(1,   `rgba(${r},${gg},${b},0)`);
-      g.fillStyle = grd;
-      g.fillRect(0, 0, s, s);
-      sprites.push(c);
-    }
-  }
-  buildSprites();
-
-  // ------------------------------------------------------------- spatial grid
-  let cell = params.rMax, cols = 0, rows = 0, heads, next;
-  function buildGrid() {
-    cell = params.rMax;
-    cols = Math.max(1, Math.ceil(W / cell));
-    rows = Math.max(1, Math.ceil(H / cell));
-    heads = new Int32Array(cols * rows);
-    next = new Int32Array(N);
-  }
-  buildGrid();
-
-  function fillGrid() {
-    heads.fill(-1);
-    for (let i = 0; i < N; i++) {
-      let cx = (px[i] / cell) | 0, cy = (py[i] / cell) | 0;
-      if (cx < 0) cx = 0; else if (cx >= cols) cx = cols - 1;
-      if (cy < 0) cy = 0; else if (cy >= rows) cy = rows - 1;
-      const idx = cy * cols + cx;
-      next[i] = heads[idx];
-      heads[idx] = i;
-    }
-  }
-
-  // força normalizada (r em 0..1). Repulsão dura perto, atração/repulsão no meio.
-  function force(r, a) {
-    if (r < beta) return r / beta - 1;
-    if (r < 1)    return a * (1 - Math.abs(2 * r - 1 - beta) / (1 - beta));
-    return 0;
-  }
-
-  // ----------------------------------------------------------------- áudio
+  // ================================================================ ÁUDIO
   const audioEl = document.getElementById("audio");
-  let actx = null, analyser = null, freq = null, srcNode = null, audioReady = false;
-  const energy = [0, 0, 0];       // energia suavizada por banda (grave/médio/agudo)
-  let bassHist = new Float32Array(50), bhi = 0, beatCd = 0;
-  const shocks = [];              // ondas de choque {x,y,r,life,type}
+  let actx = null, ready = false;
+  let anL = null, anR = null, anM = null;      // L/R time-domain, Master freq
+  let tdL = null, tdR = null, fr = null, tdM = null;
+
+  const SPEC_N = 96;                            // colunas de espectro usadas
+  const spec = new Float32Array(SPEC_N);        // espectro suavizado 0..1
+  const energy = { bass: 0, mid: 0, treb: 0, total: 0 };
+  let beat = 0;                                 // envelope de batida 0..1
+  let bassHist = new Float32Array(48), bhi = 0, beatCd = 0;
 
   function initAudio() {
     if (actx) return;
     actx = new (window.AudioContext || window.webkitAudioContext)();
-    analyser = actx.createAnalyser();
-    analyser.fftSize = 2048;
-    analyser.smoothingTimeConstant = 0.78;
-    freq = new Uint8Array(analyser.frequencyBinCount);
-    srcNode = actx.createMediaElementSource(audioEl);
-    srcNode.connect(analyser);
-    analyser.connect(actx.destination);
-    audioReady = true;
+    const src = actx.createMediaElementSource(audioEl);
+    const split = actx.createChannelSplitter(2);
+
+    anL = actx.createAnalyser(); anR = actx.createAnalyser();
+    anL.fftSize = anR.fftSize = 2048;
+    anL.smoothingTimeConstant = anR.smoothingTimeConstant = 0.5;
+
+    anM = actx.createAnalyser();
+    anM.fftSize = 4096;
+    anM.smoothingTimeConstant = 0.8;
+
+    src.connect(split);
+    split.connect(anL, 0);
+    split.connect(anR, 1);
+    src.connect(anM);
+    anM.connect(actx.destination);
+
+    tdL = new Float32Array(anL.fftSize);
+    tdR = new Float32Array(anR.fftSize);
+    tdM = new Float32Array(anM.fftSize);
+    fr  = new Uint8Array(anM.frequencyBinCount);
+    ready = true;
   }
 
-  // média de energia numa faixa de Hz
-  function band(lo, hi) {
-    const ny = actx.sampleRate / 2;
-    const bins = freq.length;
-    let a = Math.floor(lo / ny * bins), b = Math.ceil(hi / ny * bins);
-    a = Math.max(0, a); b = Math.min(bins, Math.max(b, a + 1));
-    let s = 0; for (let i = a; i < b; i++) s += freq[i];
-    return (s / (b - a)) / 255;    // 0..1
+  function bandAvg(lo, hi) {
+    const ny = actx.sampleRate / 2, n = fr.length;
+    let a = Math.max(0, Math.floor(lo / ny * n));
+    let b = Math.min(n, Math.max(a + 1, Math.ceil(hi / ny * n)));
+    let s = 0; for (let i = a; i < b; i++) s += fr[i];
+    return s / (b - a) / 255;
   }
 
-  function readAudio() {
-    if (audioReady && !audioEl.paused) {
-      analyser.getByteFrequencyData(freq);
-      const bass = Math.min(1, band(20, 250)   * 1.25);
-      const mid  = Math.min(1, band(250, 2000) * 1.5);
-      const treb = Math.min(1, band(2000, 8000)* 2.2);
-      const raw = [bass, mid, treb];
-      for (let i = 0; i < 3; i++) energy[i] += (raw[i] - energy[i]) * 0.35;
+  const playing = () => ready && !audioEl.paused;
 
-      // detecção de batida via pico de grave sobre a média móvel
+  function readAudio(t) {
+    if (playing()) {
+      anL.getFloatTimeDomainData(tdL);
+      anR.getFloatTimeDomainData(tdR);
+      anM.getFloatTimeDomainData(tdM);
+      anM.getByteFrequencyData(fr);
+
+      // espectro comprimido em SPEC_N colunas (escala ~log)
+      const nBins = fr.length, maxBin = Math.floor(nBins * 0.72);
+      for (let i = 0; i < SPEC_N; i++) {
+        const t0 = i / SPEC_N, t1 = (i + 1) / SPEC_N;
+        const a = Math.floor(Math.pow(t0, 1.7) * maxBin);
+        const b = Math.max(a + 1, Math.floor(Math.pow(t1, 1.7) * maxBin));
+        let s = 0; for (let k = a; k < b; k++) s += fr[k];
+        const v = (s / (b - a) / 255) * (0.75 + 0.6 * (i / SPEC_N)); // realça agudos
+        spec[i] += (Math.min(1, v) - spec[i]) * 0.42;
+      }
+
+      const bass = Math.min(1, bandAvg(20, 250) * 1.25);
+      energy.bass += (bass - energy.bass) * 0.3;
+      energy.mid  += (Math.min(1, bandAvg(250, 2000) * 1.5) - energy.mid) * 0.3;
+      energy.treb += (Math.min(1, bandAvg(2000, 9000) * 2.1) - energy.treb) * 0.3;
+      energy.total = (energy.bass + energy.mid + energy.treb) / 3;
+
       let avg = 0; for (let k = 0; k < bassHist.length; k++) avg += bassHist[k];
       avg /= bassHist.length;
-      if (beatCd <= 0 && bass > 0.18 && bass > avg * 1.32) { triggerBeat(bass); beatCd = 9; }
+      if (beatCd <= 0 && bass > 0.16 && bass > avg * 1.3) { beat = 1; beatCd = 9; }
       if (beatCd > 0) beatCd--;
       bassHist[bhi] = bass; bhi = (bhi + 1) % bassHist.length;
     } else {
-      // modo ocioso: leve respiração senoidal p/ nunca ficar "morto"
-      const t = performance.now() / 1000;
-      energy[0] += (0.12 + 0.11 * Math.sin(t * 1.1)       - energy[0]) * 0.05;
-      energy[1] += (0.10 + 0.09 * Math.sin(t * 1.7 + 2.1) - energy[1]) * 0.05;
-      energy[2] += (0.08 + 0.08 * Math.sin(t * 2.3 + 4.2) - energy[2]) * 0.05;
-    }
-  }
-
-  // batida: empurra partículas radialmente + registra anel visual
-  function triggerBeat(strength) {
-    const ox = Math.random() * W, oy = Math.random() * H;
-    const R = params.rMax * 2.6, push = 130 * strength;
-    for (let i = 0; i < N; i++) {
-      const dx = px[i] - ox, dy = py[i] - oy;
-      const d = Math.hypot(dx, dy);
-      if (d < R && d > 0.01) {
-        const f = (1 - d / R) * push / d;
-        vx[i] += dx * f; vy[i] += dy * f;
+      // ---- modo ocioso: sinal sintético p/ nunca ficar tela morta
+      const s = t / 1000;
+      for (let i = 0; i < SPEC_N; i++) {
+        const v = 0.18 + 0.16 * Math.sin(s * 1.4 + i * 0.22)
+                       * Math.sin(s * 0.6 + i * 0.05);
+        spec[i] += (Math.max(0, v) - spec[i]) * 0.06;
+      }
+      energy.bass += (0.22 + 0.15 * Math.sin(s * 1.1) - energy.bass) * 0.04;
+      energy.mid  += (0.18 + 0.12 * Math.sin(s * 1.9 + 2) - energy.mid) * 0.04;
+      energy.treb += (0.14 + 0.10 * Math.sin(s * 2.7 + 4) - energy.treb) * 0.04;
+      energy.total = (energy.bass + energy.mid + energy.treb) / 3;
+      if (Math.sin(s * 2.2) > 0.995 && beat < 0.1) beat = 0.7;
+      // lissajous ocioso: curvas paramétricas suaves
+      if (!tdL) { tdL = new Float32Array(2048); tdR = new Float32Array(2048); tdM = new Float32Array(2048); }
+      for (let i = 0; i < tdL.length; i++) {
+        const p = i / tdL.length * Math.PI * 2;
+        tdL[i] = Math.sin(p * 3 + s * 1.3) * 0.5;
+        tdR[i] = Math.sin(p * 2 + s * 0.9 + 1.2) * 0.5;
+        tdM[i] = Math.sin(p * 4 + s) * 0.35;
       }
     }
-    shocks.push({ x: ox, y: oy, r: 8, life: 1, type: 0 });
+    beat *= 0.90; // decaimento do envelope de batida
   }
 
-  // -------------------------------------------------------------- física
-  function step() {
-    fillGrid();
-    const rMax = params.rMax, rMax2 = rMax * rMax;
-    const ff = rMax * params.force * 0.9;
+  // ================================================================ MODOS
+  let mode = 0;
+  let irisRot = 0;
 
-    for (let i = 0; i < N; i++) {
-      const ti = pt[i], xi = px[i], yi = py[i];
-      let fx = 0, fy = 0;
-      let cx = (xi / cell) | 0, cy = (yi / cell) | 0;
-      if (cx < 0) cx = 0; else if (cx >= cols) cx = cols - 1;
-      if (cy < 0) cy = 0; else if (cy >= rows) cy = rows - 1;
-
-      for (let gy = cy - 1; gy <= cy + 1; gy++) {
-        if (gy < 0 || gy >= rows) continue;
-        for (let gx = cx - 1; gx <= cx + 1; gx++) {
-          if (gx < 0 || gx >= cols) continue;
-          let j = heads[gy * cols + gx];
-          while (j !== -1) {
-            if (j !== i) {
-              const dx = px[j] - xi, dy = py[j] - yi;
-              const d2 = dx * dx + dy * dy;
-              if (d2 < rMax2 && d2 > 0.0001) {
-                const d = Math.sqrt(d2);
-                const f = force(d / rMax, M[ti][pt[j]]);
-                fx += (dx / d) * f;
-                fy += (dy / d) * f;
-              }
-            }
-            j = next[j];
-          }
-        }
-      }
-
-      // reação ao áudio: a espécie fica mais agitada quando sua faixa toca
-      const boost = 1 + energy[ti] * params.react;
-      vx[i] = vx[i] * friction + fx * ff * boost * 0.016;
-      vy[i] = vy[i] * friction + fy * ff * boost * 0.016;
-    }
-
-    // integra + paredes com wrap (fluxo contínuo, sem bordas duras)
-    for (let i = 0; i < N; i++) {
-      px[i] += vx[i]; py[i] += vy[i];
-      if (px[i] < 0) px[i] += W; else if (px[i] >= W) px[i] -= W;
-      if (py[i] < 0) py[i] += H; else if (py[i] >= H) py[i] -= H;
-    }
-  }
-
-  // -------------------------------------------------------------- render
-  function render() {
-    // rastro: escurece o quadro anterior em vez de limpar (trilhas de plasma)
+  // ---------- fundo com rastro (cada modo pede um fade diferente)
+  function fade(alpha) {
     ctx.globalCompositeOperation = "source-over";
-    ctx.fillStyle = "rgba(6,8,18,0.16)";
+    ctx.fillStyle = `rgba(5,7,15,${alpha})`;
     ctx.fillRect(0, 0, W, H);
+  }
+
+  // ---------------------------------------------------- [0] VECTORSCOPE
+  function drawScope() {
+    fade(0.13);                                  // rastro longo: fio persistente
+    const cx = W / 2, cy = H / 2;
+    const R = Math.min(W, H) * (0.30 + energy.bass * 0.10 + beat * 0.05);
 
     ctx.globalCompositeOperation = "lighter";
-    for (let i = 0; i < N; i++) {
-      const ti = pt[i];
-      const e = energy[ti];
-      const size = 3.2 + e * 7;          // incha com a energia da banda
-      const half = size;
-      ctx.globalAlpha = 0.55 + e * 0.45;
-      ctx.drawImage(sprites[ti], px[i] - half, py[i] - half, size * 2, size * 2);
-    }
-    ctx.globalAlpha = 1;
 
-    // anéis de batida
-    for (let k = shocks.length - 1; k >= 0; k--) {
-      const s = shocks[k];
-      s.r += 14; s.life -= 0.045;
-      if (s.life <= 0) { shocks.splice(k, 1); continue; }
+    // grade sutil de osciloscópio
+    ctx.strokeStyle = "rgba(102,116,138,0.10)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - R * 1.25, cy); ctx.lineTo(cx + R * 1.25, cy);
+    ctx.moveTo(cx, cy - R * 1.25); ctx.lineTo(cx, cy + R * 1.25);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * 1.1, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // fio principal L/R — passa 2x: halo largo + núcleo fino
+    const n = tdL.length, step = 2;
+    const hue = 165 + energy.treb * 90;          // ciano -> violeta com agudos
+    for (let pass = 0; pass < 2; pass++) {
       ctx.beginPath();
-      ctx.strokeStyle = `rgba(255,120,60,${s.life * 0.5})`;
-      ctx.lineWidth = 2;
-      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      for (let i = 0; i < n; i += step) {
+        const x = cx + tdL[i] * R * 1.9;
+        const y = cy - tdR[i] * R * 1.9;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      if (pass === 0) {
+        ctx.strokeStyle = `hsla(${hue},95%,60%,${0.10 + beat * 0.12})`;
+        ctx.lineWidth = 7 + beat * 9;
+      } else {
+        ctx.strokeStyle = `hsla(${hue},100%,${68 + beat * 18}%,0.85)`;
+        ctx.lineWidth = 1.4;
+      }
       ctx.stroke();
     }
+
+    // farpas de grave: raios curtos que saltam do centro no beat
+    if (beat > 0.25) {
+      ctx.strokeStyle = `rgba(255,77,46,${beat * 0.5})`;
+      ctx.lineWidth = 1.5;
+      for (let k = 0; k < 12; k++) {
+        const a = (k / 12) * Math.PI * 2 + irisRot;
+        ctx.beginPath();
+        ctx.moveTo(cx + Math.cos(a) * R * 1.15, cy + Math.sin(a) * R * 1.15);
+        ctx.lineTo(cx + Math.cos(a) * (R * 1.15 + 18 * beat), cy + Math.sin(a) * (R * 1.15 + 18 * beat));
+        ctx.stroke();
+      }
+    }
+    irisRot += 0.002 + energy.total * 0.004;
     ctx.globalCompositeOperation = "source-over";
   }
 
-  // HUD medidores
-  const meters = [document.getElementById("m0"), document.getElementById("m1"), document.getElementById("m2")];
-  const livedot = document.getElementById("livedot");
-  function updateHUD() {
-    for (let i = 0; i < 3; i++) meters[i].style.width = Math.min(100, energy[i] * 130) + "%";
-    const on = audioReady && !audioEl.paused;
-    livedot.style.background = on ? "#22e0c8" : "#ff4d2e";
-    livedot.style.boxShadow = `0 0 8px ${on ? "#22e0c8" : "#ff4d2e"}`;
+  // ---------------------------------------------------- [1] TERRENO
+  const ROWS = 56;
+  const terrain = [];                            // fila de linhas de espectro
+  for (let r = 0; r < ROWS; r++) terrain.push(new Float32Array(SPEC_N));
+  let terrAcc = 0;
+
+  function drawTerrain(dt) {
+    fade(0.55);                                  // pouco rastro: nitidez do wireframe
+
+    // empurra nova linha ao ritmo (~30 linhas/s, mais rápido com energia)
+    terrAcc += dt * (26 + energy.total * 34);
+    while (terrAcc >= 1) {
+      terrAcc -= 1;
+      const row = terrain.pop();
+      row.set(spec);
+      terrain.unshift(row);                      // índice 0 = mais recente (perto)
+    }
+
+    const horizon = H * 0.32;
+    const baseY = H * 0.94;
+    const camAmp = Math.min(W, H) * (0.34 + beat * 0.10);
+
+    ctx.globalCompositeOperation = "lighter";
+    // desenha de trás pra frente
+    for (let r = ROWS - 1; r >= 0; r--) {
+      const z = r / (ROWS - 1);                  // 0 = perto, 1 = horizonte
+      const persp = 1 / (1 + z * 4.2);           // fator de perspectiva
+      const y0 = horizon + (baseY - horizon) * persp;
+      const half = W * (0.06 + 1.05 * persp);
+      const row = terrain[r];
+
+      // cor: brasa perto, esfria pro fundo
+      const heat = 1 - z;
+      const cr = 255, cg = Math.floor(60 + 130 * heat), cb = Math.floor(40 + 30 * (1 - heat));
+      const alpha = 0.10 + 0.62 * heat;
+
+      ctx.beginPath();
+      for (let i = 0; i < SPEC_N; i++) {
+        // espelha: agudo nas bordas, grave no centro (montanha central)
+        const half_i = Math.abs(i / (SPEC_N - 1) * 2 - 1);      // 0 centro..1 borda
+        const bin = Math.floor(half_i * (SPEC_N - 1));
+        const h = row[bin] * camAmp * persp * (1.25 - half_i * 0.55);
+        const x = W / 2 - half + (i / (SPEC_N - 1)) * half * 2;
+        const y = y0 - h;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = `rgba(${cr},${cg},${cb},${alpha})`;
+      ctx.lineWidth = r === 0 ? 2 : 1.1;
+      ctx.stroke();
+    }
+
+    // sol/reator no horizonte, pulsa com o grave
+    const sunR = 26 + energy.bass * 46 + beat * 18;
+    const g = ctx.createRadialGradient(W/2, horizon, 0, W/2, horizon, sunR * 3);
+    g.addColorStop(0, `rgba(255,120,50,${0.5 + beat * 0.3})`);
+    g.addColorStop(0.4, "rgba(255,77,46,0.18)");
+    g.addColorStop(1, "rgba(255,77,46,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(W/2 - sunR*3, horizon - sunR*3, sunR*6, sunR*6);
+    ctx.globalCompositeOperation = "source-over";
   }
 
-  // -------------------------------------------------------------- loop
-  function frame() {
-    readAudio();
-    step();
-    render();
-    updateHUD();
+  // ---------------------------------------------------- [2] ÍRIS
+  function drawIris() {
+    fade(0.20);
+    const cx = W / 2, cy = H / 2;
+    const base = Math.min(W, H) * 0.16;
+    const R = base * (1 + energy.bass * 0.35 + beat * 0.22);
+
+    irisRot += 0.0025 + energy.mid * 0.010 + beat * 0.02;
+    ctx.globalCompositeOperation = "lighter";
+
+    // pétalas de espectro: espelhadas em N setores
+    const SEG = 2;                                // espelha em 2 metades
+    const perSeg = SPEC_N;
+    for (let s = 0; s < SEG; s++) {
+      const dir = s === 0 ? 1 : -1;
+      for (let i = 0; i < perSeg; i++) {
+        const v = spec[i];
+        if (v < 0.02) continue;
+        const a = irisRot + dir * (i / perSeg) * Math.PI;
+        const len = v * base * 2.4;
+        const x0 = cx + Math.cos(a) * R, y0 = cy + Math.sin(a) * R;
+        const x1 = cx + Math.cos(a) * (R + len), y1 = cy + Math.sin(a) * (R + len);
+        // gradiente de cor pelo índice: grave=heat, médio=plasma, agudo=arc
+        const t = i / perSeg;
+        let col;
+        if (t < 0.33)      col = `rgba(255,77,46,${0.25 + v * 0.6})`;
+        else if (t < 0.66) col = `rgba(34,224,200,${0.22 + v * 0.6})`;
+        else               col = `rgba(162,75,255,${0.22 + v * 0.65})`;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.6 + v * 2.6;
+        ctx.beginPath();
+        ctx.moveTo(x0, y0); ctx.lineTo(x1, y1);
+        ctx.stroke();
+      }
+    }
+
+    // anel interno de waveform
+    const n = tdM.length, step = 8;
+    ctx.beginPath();
+    for (let i = 0; i <= n - step; i += step) {
+      const a = (i / n) * Math.PI * 2 + irisRot * 0.5;
+      const rr = R * 0.82 + tdM[i] * base * 0.9;
+      const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
+      i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.strokeStyle = `rgba(255,214,150,${0.5 + beat * 0.4})`;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+
+    // núcleo
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 0.6);
+    g.addColorStop(0, `rgba(255,180,100,${0.30 + beat * 0.45})`);
+    g.addColorStop(1, "rgba(255,120,60,0)");
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(cx, cy, R * 0.6, 0, Math.PI * 2); ctx.fill();
+
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  // ================================================================ LOOP
+  let last = performance.now();
+  function frame(t) {
+    const dt = Math.min(0.05, (t - last) / 1000);
+    last = t;
+    readAudio(t);
+    if (mode === 0) drawScope();
+    else if (mode === 1) drawTerrain(dt);
+    else drawIris();
+    updateDock();
     requestAnimationFrame(frame);
   }
+  // primeira pintura cheia do fundo
+  ctx.fillStyle = "#05070f"; ctx.fillRect(0, 0, W, H);
   requestAnimationFrame(frame);
 
-  // -------------------------------------------------------------- controles
-  const fileInput = document.getElementById("file");
+  // ================================================================ UI
   const $ = id => document.getElementById(id);
+  const modeBtns = [...document.querySelectorAll(".mode")];
 
+  function setMode(m) {
+    mode = m;
+    modeBtns.forEach((b, i) => b.classList.toggle("on", i === m));
+    ctx.fillStyle = "#05070f"; ctx.fillRect(0, 0, W, H);  // limpa rastro do modo anterior
+  }
+  modeBtns.forEach(b => b.onclick = () => setMode(+b.dataset.m));
+  addEventListener("keydown", e => {
+    if (e.key >= "1" && e.key <= "3") setMode(+e.key - 1);
+    if (e.key === " ") { e.preventDefault(); $("bPlay").click(); }
+  });
+
+  const fileInput = $("file");
   $("bLoad").onclick = () => fileInput.click();
   fileInput.onchange = e => {
     const f = e.target.files[0];
@@ -442,36 +433,26 @@
     initAudio();
     audioEl.src = URL.createObjectURL(f);
     $("trackName").textContent = "♪ " + f.name;
-    audioEl.play().then(() => { $("bPlay").textContent = "❚❚ Pausar"; })
-                  .catch(() => {});
+    if (actx.state === "suspended") actx.resume();
+    audioEl.play().then(() => $("bPlay").textContent = "❚❚").catch(() => {});
   };
-
   $("bPlay").onclick = () => {
     if (!audioEl.src) { fileInput.click(); return; }
     initAudio();
     if (actx.state === "suspended") actx.resume();
-    if (audioEl.paused) { audioEl.play(); $("bPlay").textContent = "❚❚ Pausar"; }
-    else { audioEl.pause(); $("bPlay").textContent = "▶ Tocar"; }
+    if (audioEl.paused) { audioEl.play(); $("bPlay").textContent = "❚❚"; }
+    else { audioEl.pause(); $("bPlay").textContent = "▶"; }
   };
-  audioEl.onended = () => { $("bPlay").textContent = "▶ Tocar"; };
+  audioEl.onended = () => $("bPlay").textContent = "▶";
 
-  $("bReset").onclick = () => { spawn(params.count); buildGrid(); };
-
-  function bind(slider, key, label, fmt, after) {
-    const el = $(slider), out = $(label);
-    el.oninput = () => {
-      const v = parseFloat(el.value);
-      params[key] = v;
-      out.textContent = fmt ? fmt(v) : v;
-      if (after) after();
-    };
+  // mini-medidor no dock
+  const bars = [...document.querySelectorAll("#meterWrap i")];
+  function updateDock() {
+    const src = [energy.bass, energy.bass, energy.mid, energy.mid, energy.treb, energy.treb];
+    for (let i = 0; i < bars.length; i++) {
+      bars[i].style.height = Math.max(2, src[i] * 18) + "px";
+      bars[i].style.opacity = 0.35 + src[i] * 0.65;
+    }
   }
-  bind("sCount", "count", "vCount", v => v, () => { spawn(params.count); buildGrid(); });
-  bind("sForce", "force", "vForce", v => v.toFixed(2));
-  bind("sRange", "rMax", "vRange", v => v, () => buildGrid());
-  bind("sReact", "react", "vReact", v => v.toFixed(1));
-
-  // recolher HUD
-  $("toggle").onclick = () => document.getElementById("hud").classList.toggle("collapsed");
 })();
 </script>
