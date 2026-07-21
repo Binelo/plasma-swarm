@@ -1,8 +1,8 @@
 {
-  "name": "Trivisor — Visualizador de Música",
-  "short_name": "Trivisor",
-  "description": "Seis visualizações de música em tempo real: vectorscope, terreno, íris, espectrograma, túnel e nova.",
-  "start_url": "./trivisor.html",
+  "name": "SoundMe — Visualizador de Música",
+  "short_name": "SoundMe",
+  "description": "Seis visualizações de música e microfone em tempo real: vectorscope, terreno, íris, fonte, túnel e nova.",
+  "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",

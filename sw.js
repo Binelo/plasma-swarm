@@ -1,6 +1,6 @@
-/* Trivisor — service worker (cache-first, offline-capable) */
-const CACHE = "trivisor-v1";
-const ASSETS = ["./trivisor.html", "./manifest.webmanifest", "./icon.svg", "./"];
+/* SoundMe — service worker (cache-first, offline-capable) */
+const CACHE = "soundme-v2";
+const ASSETS = ["./", "./index.html", "./manifest.webmanifest", "./icon.svg"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(
@@ -26,7 +26,6 @@ self.addEventListener("fetch", (e) => {
       if (hit) return hit;
       return fetch(e.request)
         .then((res) => {
-          // só cacheia respostas OK do próprio escopo
           if (res.ok && new URL(e.request.url).origin === location.origin) {
             const clone = res.clone();
             caches.open(CACHE).then((c) => c.put(e.request, clone));
@@ -34,8 +33,7 @@ self.addEventListener("fetch", (e) => {
           return res;
         })
         .catch(() =>
-          // offline: navegações caem no app
-          e.request.mode === "navigate" ? caches.match("./trivisor.html") : undefined
+          e.request.mode === "navigate" ? caches.match("./index.html") : undefined
         );
     })
   );
