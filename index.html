@@ -1,0 +1,477 @@
+<!--
+  PLASMA SWARM — visualizador de áudio com particle life
+  ------------------------------------------------------
+  Três espécies de partícula, uma por banda de frequência:
+    GRAVE  (laranja/heat)  caça MÉDIO,  foge de AGUDO
+    MÉDIO  (ciano/plasma)  caça AGUDO,  foge de GRAVE
+    AGUDO  (violeta/arc)   caça GRAVE,  foge de MÉDIO
+  Cadeia pedra-papel-tesoura -> movimento perpétuo, sem estagnar.
+  Cada espécie brilha/incha quando sua faixa toca. Beat -> onda de choque.
+-->
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plasma Swarm</title>
+<style>
+  :root{
+    --bg:#060812;
+    --heat:#ff4d2e;      /* GRAVE  */
+    --plasma:#22e0c8;    /* MÉDIO  */
+    --arc:#a24bff;       /* AGUDO  */
+    --hud-fg:#ffb347;
+    --hud-dim:#6b7a8f;
+    --hud-panel:rgba(8,12,22,.72);
+    --mono:"SFMono-Regular",ui-monospace,"JetBrains Mono","Consolas",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);overflow:hidden;
+    font-family:var(--mono);color:var(--hud-fg);
+    -webkit-font-smoothing:antialiased}
+  #stage{position:fixed;inset:0;display:block}
+
+  /* ---------- HUD ---------- */
+  #hud{position:fixed;top:14px;left:14px;width:270px;z-index:10;
+    background:var(--hud-panel);border:1px solid rgba(255,179,71,.18);
+    border-radius:10px;backdrop-filter:blur(9px);
+    box-shadow:0 12px 40px rgba(0,0,0,.5);
+    transition:transform .25s ease,opacity .25s ease}
+  #hud.collapsed{transform:translateX(calc(-100% + 42px))}
+  .hud-bar{display:flex;align-items:center;gap:8px;padding:11px 12px;
+    border-bottom:1px solid rgba(255,179,71,.12);cursor:default}
+  .brand{font-weight:600;letter-spacing:2.5px;font-size:12px;flex:1;
+    text-transform:uppercase}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--heat);
+    box-shadow:0 0 8px var(--heat)}
+  #toggle{margin-left:auto;background:none;border:none;color:var(--hud-fg);
+    cursor:pointer;font-family:var(--mono);font-size:13px;padding:2px 6px;
+    border-radius:5px}
+  #toggle:hover{background:rgba(255,179,71,.12)}
+
+  .hud-body{padding:12px}
+  .legend{display:flex;flex-direction:column;gap:9px;margin-bottom:14px}
+  .row{display:flex;align-items:center;gap:9px;font-size:10.5px;
+    letter-spacing:.5px;text-transform:uppercase;color:var(--hud-dim)}
+  .row .sw{width:9px;height:9px;border-radius:50%;flex:none}
+  .row .nm{width:52px;color:#cdd6e4;font-weight:600}
+  .row .rel{flex:1;font-size:9.5px}
+  .meter{width:46px;height:5px;border-radius:3px;background:rgba(255,255,255,.07);
+    overflow:hidden;flex:none}
+  .meter > i{display:block;height:100%;width:0%;transition:width .05s linear}
+
+  .ctrls{display:flex;flex-direction:column;gap:11px}
+  .field{display:flex;flex-direction:column;gap:5px}
+  .field label{font-size:9.5px;letter-spacing:1px;text-transform:uppercase;
+    color:var(--hud-dim);display:flex;justify-content:space-between}
+  .field label b{color:#cdd6e4;font-weight:600}
+  input[type=range]{-webkit-appearance:none;appearance:none;height:3px;
+    border-radius:3px;background:rgba(255,179,71,.22);outline:none;cursor:pointer}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:13px;
+    height:13px;border-radius:50%;background:var(--hud-fg);cursor:pointer;
+    box-shadow:0 0 8px rgba(255,179,71,.6)}
+  input[type=range]::-moz-range-thumb{width:13px;height:13px;border:none;
+    border-radius:50%;background:var(--hud-fg);cursor:pointer}
+
+  .btns{display:flex;gap:8px;margin-top:2px}
+  .btn{flex:1;padding:9px 8px;border:1px solid rgba(255,179,71,.25);
+    background:rgba(255,179,71,.06);color:var(--hud-fg);border-radius:7px;
+    font-family:var(--mono);font-size:10.5px;letter-spacing:1px;cursor:pointer;
+    text-transform:uppercase;transition:background .15s,border-color .15s;
+    display:flex;align-items:center;justify-content:center;gap:6px}
+  .btn:hover{background:rgba(255,179,71,.14);border-color:rgba(255,179,71,.5)}
+  .btn.primary{background:rgba(255,77,46,.14);border-color:rgba(255,77,46,.45);
+    color:#ffd9c8}
+  .btn.primary:hover{background:rgba(255,77,46,.24)}
+  .hint{margin-top:11px;font-size:9.5px;line-height:1.5;color:var(--hud-dim);
+    letter-spacing:.3px}
+  .track{margin-top:9px;font-size:9.5px;color:var(--plasma);letter-spacing:.4px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  input[type=file]{display:none}
+
+  @media (max-width:520px){#hud{width:calc(100vw - 28px)}}
+  @media (prefers-reduced-motion:reduce){#hud{transition:none}}
+</style>
+
+<canvas id="stage"></canvas>
+
+<div id="hud">
+  <div class="hud-bar">
+    <span class="dot" id="livedot"></span>
+    <span class="brand">Plasma Swarm</span>
+    <button id="toggle" title="Recolher">⟨⟩</button>
+  </div>
+  <div class="hud-body">
+    <div class="legend">
+      <div class="row">
+        <span class="sw" style="background:var(--heat);box-shadow:0 0 7px var(--heat)"></span>
+        <span class="nm">Grave</span>
+        <span class="rel">caça médio · foge do agudo</span>
+        <span class="meter"><i id="m0" style="background:var(--heat)"></i></span>
+      </div>
+      <div class="row">
+        <span class="sw" style="background:var(--plasma);box-shadow:0 0 7px var(--plasma)"></span>
+        <span class="nm">Médio</span>
+        <span class="rel">caça agudo · foge do grave</span>
+        <span class="meter"><i id="m1" style="background:var(--plasma)"></i></span>
+      </div>
+      <div class="row">
+        <span class="sw" style="background:var(--arc);box-shadow:0 0 7px var(--arc)"></span>
+        <span class="nm">Agudo</span>
+        <span class="rel">caça grave · foge do médio</span>
+        <span class="meter"><i id="m2" style="background:var(--arc)"></i></span>
+      </div>
+    </div>
+
+    <div class="ctrls">
+      <div class="field">
+        <label>Partículas <b id="vCount">900</b></label>
+        <input id="sCount" type="range" min="200" max="2000" step="50" value="900" />
+      </div>
+      <div class="field">
+        <label>Força <b id="vForce">1.0</b></label>
+        <input id="sForce" type="range" min="0.2" max="2.5" step="0.05" value="1.0" />
+      </div>
+      <div class="field">
+        <label>Alcance <b id="vRange">130</b></label>
+        <input id="sRange" type="range" min="60" max="220" step="5" value="130" />
+      </div>
+      <div class="field">
+        <label>Reação ao áudio <b id="vReact">1.4</b></label>
+        <input id="sReact" type="range" min="0" max="3" step="0.1" value="1.4" />
+      </div>
+
+      <div class="btns">
+        <button class="btn primary" id="bLoad">♪ Carregar música</button>
+        <button class="btn" id="bPlay">▶ Tocar</button>
+      </div>
+      <div class="btns">
+        <button class="btn" id="bReset">↻ Reiniciar enxame</button>
+      </div>
+
+      <div class="track" id="trackName">Modo ocioso — sem faixa carregada</div>
+      <div class="hint">Carregue um .mp3/.wav. O baixo agita as laranjas, os médios as cianas, os agudos as violetas. Cada drop dispara uma onda de choque.</div>
+    </div>
+  </div>
+</div>
+
+<input id="file" type="file" accept="audio/*" />
+<audio id="audio" crossorigin="anonymous"></audio>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------------------------------------------------------------- setup
+  const cv = document.getElementById("stage");
+  const ctx = cv.getContext("2d", { alpha: false });
+  let W = 0, H = 0, DPR = 1;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    cv.width = W * DPR; cv.height = H * DPR;
+    cv.style.width = W + "px"; cv.style.height = H + "px";
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // ---------------------------------------------------------- config / state
+  const TYPES = [
+    { name: "grave", color: [255, 77, 46] },   // 0 bass
+    { name: "medio", color: [34, 224, 200] },  // 1 mid
+    { name: "agudo", color: [162, 75, 255] },  // 2 treble
+  ];
+
+  // Matriz de atração pedra-papel-tesoura.
+  // linha = como a espécie "sente" a coluna. + atrai (caça), - repele (foge).
+  // Grave caça Médio e foge de Agudo; e assim por diante, ciclicamente.
+  const M = [
+    [-0.08,  0.90, -0.90],
+    [-0.90, -0.08,  0.90],
+    [ 0.90, -0.90, -0.08],
+  ];
+
+  let params = { count: 900, force: 1.0, rMax: 130, react: 1.4 };
+  const friction = 0.86;    // amortecimento por frame
+  const beta = 0.28;        // raio de repulsão de curta distância (normalizado)
+
+  // arrays de partículas (Structure of Arrays p/ performance)
+  let px, py, vx, vy, pt, N = 0;
+
+  function spawn(n) {
+    N = n;
+    px = new Float32Array(n); py = new Float32Array(n);
+    vx = new Float32Array(n); vy = new Float32Array(n);
+    pt = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      px[i] = Math.random() * W;
+      py[i] = Math.random() * H;
+      vx[i] = (Math.random() - 0.5) * 12;
+      vy[i] = (Math.random() - 0.5) * 12;
+      pt[i] = i % 3;                 // distribuição igual entre as 3 espécies
+    }
+  }
+  spawn(params.count);
+
+  // ------------------------------------------------------- glow sprites (cache)
+  const sprites = [];
+  function buildSprites() {
+    sprites.length = 0;
+    for (const t of TYPES) {
+      const s = 64, c = document.createElement("canvas");
+      c.width = c.height = s;
+      const g = c.getContext("2d");
+      const grd = g.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+      const [r, gg, b] = t.color;
+      grd.addColorStop(0,   `rgba(${r},${gg},${b},1)`);
+      grd.addColorStop(0.25,`rgba(${r},${gg},${b},0.55)`);
+      grd.addColorStop(1,   `rgba(${r},${gg},${b},0)`);
+      g.fillStyle = grd;
+      g.fillRect(0, 0, s, s);
+      sprites.push(c);
+    }
+  }
+  buildSprites();
+
+  // ------------------------------------------------------------- spatial grid
+  let cell = params.rMax, cols = 0, rows = 0, heads, next;
+  function buildGrid() {
+    cell = params.rMax;
+    cols = Math.max(1, Math.ceil(W / cell));
+    rows = Math.max(1, Math.ceil(H / cell));
+    heads = new Int32Array(cols * rows);
+    next = new Int32Array(N);
+  }
+  buildGrid();
+
+  function fillGrid() {
+    heads.fill(-1);
+    for (let i = 0; i < N; i++) {
+      let cx = (px[i] / cell) | 0, cy = (py[i] / cell) | 0;
+      if (cx < 0) cx = 0; else if (cx >= cols) cx = cols - 1;
+      if (cy < 0) cy = 0; else if (cy >= rows) cy = rows - 1;
+      const idx = cy * cols + cx;
+      next[i] = heads[idx];
+      heads[idx] = i;
+    }
+  }
+
+  // força normalizada (r em 0..1). Repulsão dura perto, atração/repulsão no meio.
+  function force(r, a) {
+    if (r < beta) return r / beta - 1;
+    if (r < 1)    return a * (1 - Math.abs(2 * r - 1 - beta) / (1 - beta));
+    return 0;
+  }
+
+  // ----------------------------------------------------------------- áudio
+  const audioEl = document.getElementById("audio");
+  let actx = null, analyser = null, freq = null, srcNode = null, audioReady = false;
+  const energy = [0, 0, 0];       // energia suavizada por banda (grave/médio/agudo)
+  let bassHist = new Float32Array(50), bhi = 0, beatCd = 0;
+  const shocks = [];              // ondas de choque {x,y,r,life,type}
+
+  function initAudio() {
+    if (actx) return;
+    actx = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = actx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.78;
+    freq = new Uint8Array(analyser.frequencyBinCount);
+    srcNode = actx.createMediaElementSource(audioEl);
+    srcNode.connect(analyser);
+    analyser.connect(actx.destination);
+    audioReady = true;
+  }
+
+  // média de energia numa faixa de Hz
+  function band(lo, hi) {
+    const ny = actx.sampleRate / 2;
+    const bins = freq.length;
+    let a = Math.floor(lo / ny * bins), b = Math.ceil(hi / ny * bins);
+    a = Math.max(0, a); b = Math.min(bins, Math.max(b, a + 1));
+    let s = 0; for (let i = a; i < b; i++) s += freq[i];
+    return (s / (b - a)) / 255;    // 0..1
+  }
+
+  function readAudio() {
+    if (audioReady && !audioEl.paused) {
+      analyser.getByteFrequencyData(freq);
+      const bass = Math.min(1, band(20, 250)   * 1.25);
+      const mid  = Math.min(1, band(250, 2000) * 1.5);
+      const treb = Math.min(1, band(2000, 8000)* 2.2);
+      const raw = [bass, mid, treb];
+      for (let i = 0; i < 3; i++) energy[i] += (raw[i] - energy[i]) * 0.35;
+
+      // detecção de batida via pico de grave sobre a média móvel
+      let avg = 0; for (let k = 0; k < bassHist.length; k++) avg += bassHist[k];
+      avg /= bassHist.length;
+      if (beatCd <= 0 && bass > 0.18 && bass > avg * 1.32) { triggerBeat(bass); beatCd = 9; }
+      if (beatCd > 0) beatCd--;
+      bassHist[bhi] = bass; bhi = (bhi + 1) % bassHist.length;
+    } else {
+      // modo ocioso: leve respiração senoidal p/ nunca ficar "morto"
+      const t = performance.now() / 1000;
+      energy[0] += (0.12 + 0.11 * Math.sin(t * 1.1)       - energy[0]) * 0.05;
+      energy[1] += (0.10 + 0.09 * Math.sin(t * 1.7 + 2.1) - energy[1]) * 0.05;
+      energy[2] += (0.08 + 0.08 * Math.sin(t * 2.3 + 4.2) - energy[2]) * 0.05;
+    }
+  }
+
+  // batida: empurra partículas radialmente + registra anel visual
+  function triggerBeat(strength) {
+    const ox = Math.random() * W, oy = Math.random() * H;
+    const R = params.rMax * 2.6, push = 130 * strength;
+    for (let i = 0; i < N; i++) {
+      const dx = px[i] - ox, dy = py[i] - oy;
+      const d = Math.hypot(dx, dy);
+      if (d < R && d > 0.01) {
+        const f = (1 - d / R) * push / d;
+        vx[i] += dx * f; vy[i] += dy * f;
+      }
+    }
+    shocks.push({ x: ox, y: oy, r: 8, life: 1, type: 0 });
+  }
+
+  // -------------------------------------------------------------- física
+  function step() {
+    fillGrid();
+    const rMax = params.rMax, rMax2 = rMax * rMax;
+    const ff = rMax * params.force * 0.9;
+
+    for (let i = 0; i < N; i++) {
+      const ti = pt[i], xi = px[i], yi = py[i];
+      let fx = 0, fy = 0;
+      let cx = (xi / cell) | 0, cy = (yi / cell) | 0;
+      if (cx < 0) cx = 0; else if (cx >= cols) cx = cols - 1;
+      if (cy < 0) cy = 0; else if (cy >= rows) cy = rows - 1;
+
+      for (let gy = cy - 1; gy <= cy + 1; gy++) {
+        if (gy < 0 || gy >= rows) continue;
+        for (let gx = cx - 1; gx <= cx + 1; gx++) {
+          if (gx < 0 || gx >= cols) continue;
+          let j = heads[gy * cols + gx];
+          while (j !== -1) {
+            if (j !== i) {
+              const dx = px[j] - xi, dy = py[j] - yi;
+              const d2 = dx * dx + dy * dy;
+              if (d2 < rMax2 && d2 > 0.0001) {
+                const d = Math.sqrt(d2);
+                const f = force(d / rMax, M[ti][pt[j]]);
+                fx += (dx / d) * f;
+                fy += (dy / d) * f;
+              }
+            }
+            j = next[j];
+          }
+        }
+      }
+
+      // reação ao áudio: a espécie fica mais agitada quando sua faixa toca
+      const boost = 1 + energy[ti] * params.react;
+      vx[i] = vx[i] * friction + fx * ff * boost * 0.016;
+      vy[i] = vy[i] * friction + fy * ff * boost * 0.016;
+    }
+
+    // integra + paredes com wrap (fluxo contínuo, sem bordas duras)
+    for (let i = 0; i < N; i++) {
+      px[i] += vx[i]; py[i] += vy[i];
+      if (px[i] < 0) px[i] += W; else if (px[i] >= W) px[i] -= W;
+      if (py[i] < 0) py[i] += H; else if (py[i] >= H) py[i] -= H;
+    }
+  }
+
+  // -------------------------------------------------------------- render
+  function render() {
+    // rastro: escurece o quadro anterior em vez de limpar (trilhas de plasma)
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "rgba(6,8,18,0.16)";
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = 0; i < N; i++) {
+      const ti = pt[i];
+      const e = energy[ti];
+      const size = 3.2 + e * 7;          // incha com a energia da banda
+      const half = size;
+      ctx.globalAlpha = 0.55 + e * 0.45;
+      ctx.drawImage(sprites[ti], px[i] - half, py[i] - half, size * 2, size * 2);
+    }
+    ctx.globalAlpha = 1;
+
+    // anéis de batida
+    for (let k = shocks.length - 1; k >= 0; k--) {
+      const s = shocks[k];
+      s.r += 14; s.life -= 0.045;
+      if (s.life <= 0) { shocks.splice(k, 1); continue; }
+      ctx.beginPath();
+      ctx.strokeStyle = `rgba(255,120,60,${s.life * 0.5})`;
+      ctx.lineWidth = 2;
+      ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  // HUD medidores
+  const meters = [document.getElementById("m0"), document.getElementById("m1"), document.getElementById("m2")];
+  const livedot = document.getElementById("livedot");
+  function updateHUD() {
+    for (let i = 0; i < 3; i++) meters[i].style.width = Math.min(100, energy[i] * 130) + "%";
+    const on = audioReady && !audioEl.paused;
+    livedot.style.background = on ? "#22e0c8" : "#ff4d2e";
+    livedot.style.boxShadow = `0 0 8px ${on ? "#22e0c8" : "#ff4d2e"}`;
+  }
+
+  // -------------------------------------------------------------- loop
+  function frame() {
+    readAudio();
+    step();
+    render();
+    updateHUD();
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  // -------------------------------------------------------------- controles
+  const fileInput = document.getElementById("file");
+  const $ = id => document.getElementById(id);
+
+  $("bLoad").onclick = () => fileInput.click();
+  fileInput.onchange = e => {
+    const f = e.target.files[0];
+    if (!f) return;
+    initAudio();
+    audioEl.src = URL.createObjectURL(f);
+    $("trackName").textContent = "♪ " + f.name;
+    audioEl.play().then(() => { $("bPlay").textContent = "❚❚ Pausar"; })
+                  .catch(() => {});
+  };
+
+  $("bPlay").onclick = () => {
+    if (!audioEl.src) { fileInput.click(); return; }
+    initAudio();
+    if (actx.state === "suspended") actx.resume();
+    if (audioEl.paused) { audioEl.play(); $("bPlay").textContent = "❚❚ Pausar"; }
+    else { audioEl.pause(); $("bPlay").textContent = "▶ Tocar"; }
+  };
+  audioEl.onended = () => { $("bPlay").textContent = "▶ Tocar"; };
+
+  $("bReset").onclick = () => { spawn(params.count); buildGrid(); };
+
+  function bind(slider, key, label, fmt, after) {
+    const el = $(slider), out = $(label);
+    el.oninput = () => {
+      const v = parseFloat(el.value);
+      params[key] = v;
+      out.textContent = fmt ? fmt(v) : v;
+      if (after) after();
+    };
+  }
+  bind("sCount", "count", "vCount", v => v, () => { spawn(params.count); buildGrid(); });
+  bind("sForce", "force", "vForce", v => v.toFixed(2));
+  bind("sRange", "rMax", "vRange", v => v, () => buildGrid());
+  bind("sReact", "react", "vReact", v => v.toFixed(1));
+
+  // recolher HUD
+  $("toggle").onclick = () => document.getElementById("hud").classList.toggle("collapsed");
+})();
+</script>
